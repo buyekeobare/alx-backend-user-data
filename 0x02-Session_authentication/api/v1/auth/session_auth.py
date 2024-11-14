@@ -1,79 +1,71 @@
 #!/usr/bin/env python3
-"""Route module for the API.
 """
-import os
-from os import getenv
-from flask import Flask, jsonify, abort, request
-from flask_cors import (CORS, cross_origin)
+Definition of class SessionAuth
+"""
+import base64
+from uuid import uuid4
+from typing import TypeVar
 
-from api.v1.views import app_views
-from api.v1.auth.auth import Auth
-from api.v1.auth.basic_auth import BasicAuth
-from api.v1.auth.session_auth import SessionAuth
-from api.v1.auth.session_db_auth import SessionDBAuth
-from api.v1.auth.session_exp_auth import SessionExpAuth
+from .auth import Auth
+from models.user import User
 
 
-app = Flask(__name__)
-app.register_blueprint(app_views)
-CORS(app, resources={r"/api/v1/*": {"origins": "*"}})
-auth = None
-auth_type = getenv('AUTH_TYPE', 'auth')
-if auth_type == 'auth':
-    auth = Auth()
-if auth_type == 'basic_auth':
-    auth = BasicAuth()
-if auth_type == 'session_auth':
-    auth = SessionAuth()
-if auth_type == 'session_exp_auth':
-    auth = SessionExpAuth()
-if auth_type == 'session_db_auth':
-    auth = SessionDBAuth()
-
-
-@app.errorhandler(404)
-def not_found(error) -> str:
-    """Not found handler.
+class SessionAuth(Auth):
+    """ Implement Session Authorization protocol methods
     """
-    return jsonify({"error": "Not found"}), 404
+    user_id_by_session_id = {}
 
+    def create_session(self, user_id: str = None) -> str:
+        """
+        Creates a Session ID for a user with id user_id
+        Args:
+            user_id (str): user's user id
+        Return:
+            None is user_id is None or not a string
+            Session ID in string format
+        """
+        if user_id is None or not isinstance(user_id, str):
+            return None
+        id = uuid4()
+        self.user_id_by_session_id[str(id)] = user_id
+        return str(id)
 
-@app.errorhandler(401)
-def unauthorized(error) -> str:
-    """Unauthorized handler.
-    """
-    return jsonify({"error": "Unauthorized"}), 401
+    def user_id_for_session_id(self, session_id: str = None) -> str:
+        """
+        Returns a user ID based on a session ID
+        Args:
+            session_id (str): session ID
+        Return:
+            user id or None if session_id is None or not a string
+        """
+        if session_id is None or not isinstance(session_id, str):
+            return None
+        return self.user_id_by_session_id.get(session_id)
 
+    def current_user(self, request=None):
+        """
+        Return a user instance based on a cookie value
+        Args:
+            request : request object containing cookie
+        Return:
+            User instance
+        """
+        session_cookie = self.session_cookie(request)
+        user_id = self.user_id_for_session_id(session_cookie)
+        user = User.get(user_id)
+        return user
 
-@app.errorhandler(403)
-def forbidden(error) -> str:
-    """Forbidden handler.
-    """
-    return jsonify({"error": "Forbidden"}), 403
-
-
-@app.before_request
-def authenticate_user():
-    """Authenticates a user before processing a request.
-    """
-    if auth:
-        excluded_paths = [
-            "/api/v1/status/",
-            "/api/v1/unauthorized/",
-            "/api/v1/forbidden/",
-            "/api/v1/auth_session/login/",
-        ]
-        if auth.require_auth(request.path, excluded_paths):
-            user = auth.current_user(request)
-            if auth.authorization_header(request) is None and \
-                    auth.session_cookie(request) is None:
-                abort(401)
-            if user is None:
-                abort(403)
-            request.current_user = user
-
-
-if __name__ == "__main__":
-    host = getenv("API_HOST", "0.0.0.0")
-    port = getenv("API_PORT", "5000")
-    app.run(host=host, port=port)
+    def destroy_session(self, request=None):
+        """
+        Deletes a user session
+        """
+        if request is None:
+            return False
+        session_cookie = self.session_cookie(request)
+        if session_cookie is None:
+            return False
+        user_id = self.user_id_for_session_id(session_cookie)
+        if user_id is None:
+            return False
+        del self.user_id_by_session_id[session_cookie]
+        return True
